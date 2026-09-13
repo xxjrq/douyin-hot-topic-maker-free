@@ -1,9 +1,10 @@
 name: "douyin-hot-topic-maker-free"
 display_name: "免费抖音热点选题助手"
 slug: "douyin-hot-topic-maker-free"
-version: "1.0.1"
+version: "1.0.2"
 category: "content-research"
 author: "xxjrq"
+repository: "https://github.com/xxjrq/douyin-hot-topic-maker-free"
 description: "免费、免第三方内容 API Key，复用浏览器登录状态；按 EasyBR 多账号隔离生成 5 个带来源的抖音热点选题。"
 triggers:
   - "免费抖音热点选题"
