@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import os from "node:os";
 import path from "node:path";
-import { bridgeCommandPayload, normalizeSnapshot, renderPlan, selectBrowser, validateDraft, validateRequest } from "./douyin-hot-topic-maker-free.mjs";
+import { bridgeCommandPayload, HOT_EXTRACT, normalizeSnapshot, renderPlan, SEARCH_EXTRACT, selectBrowser, validateBridgeBase, validateDraft, validateRequest } from "./douyin-hot-topic-maker-free.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const run = promisify(execFile);
@@ -32,6 +32,23 @@ try {
     assert.equal(request.planCount, 5);
     assert.equal(request.browserId, null);
     assert.throws(() => validateRequest({ ...request, planCount: 3 }), /fixed at 5/);
+  });
+
+  await test("Bridge URL is loopback-only and page extraction excludes hidden cards", () => {
+    assert.equal(validateBridgeBase("http://127.0.0.1:17777"), "http://127.0.0.1:17777");
+    assert.equal(validateBridgeBase("http://[::1]:17777/"), "http://[::1]:17777");
+    for (const value of ["https://example.com", "http://user:pass@127.0.0.1:17777", "http://127.0.0.1:17777/api", "http://127.0.0.1:17777/?x=1"]) assert.throws(() => validateBridgeBase(value));
+    const anchor = (title, visible) => ({ innerText: title, href: `https://www.douyin.com/video/${visible ? "1" : "2"}`, getBoundingClientRect: () => ({ width: visible ? 20 : 0, height: 20 }), closest: (selector) => selector === "div" ? { innerText: `热点 ${title}` } : null });
+    const nodes = [anchor("显示内容", true), anchor("隐藏推荐", false)];
+    const document = { body: { innerText: "热点" }, querySelectorAll: (selector) => selector.includes("/video/") ? nodes : [] };
+    const location = { href: "https://www.douyin.com/hot", pathname: "/hot" };
+    const extractHot = new Function("document", "location", "getComputedStyle", `return ${HOT_EXTRACT}`)(document, location, () => ({ display: "block", visibility: "visible" }));
+    assert.equal(extractHot.items.length, 1);
+    assert.equal(extractHot.items[0].title, "显示内容");
+    const searchCard = { innerText: "显示搜索结果\n@作者", getBoundingClientRect: () => ({ width: 20, height: 20 }), closest: () => null, querySelector: () => null };
+    const searchDoc = { ...document, querySelector: () => null, querySelectorAll: (selector) => selector === ".search-result-card" ? [searchCard] : [] };
+    const extractSearch = new Function("document", "location", "getComputedStyle", `return ${SEARCH_EXTRACT}`)(searchDoc, { href: "https://www.douyin.com/jingxuan/search/ai", pathname: "/jingxuan/search/ai" }, () => ({ display: "block", visibility: "visible" }));
+    assert.equal(extractSearch.items.length, 1);
   });
 
   await test("browser selection is automatic only when unambiguous", () => {
@@ -114,6 +131,7 @@ try {
     assert.equal(payload.args.session, session);
     assert.equal(Object.hasOwn(payload, "session"), false);
     assert.equal(bridgeCommandPayload("close_session", {}, session).action, "close_session");
+    assert.equal(Object.hasOwn(bridgeCommandPayload("navigate", { url: "https://www.douyin.com/hot" }, session).args, "active"), false);
   });
 
   await test("CLI validation failure removes stale success files", async () => {

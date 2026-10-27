@@ -73,6 +73,10 @@ node scripts/douyin-hot-topic-maker-free.mjs list
 
 不读取或输出 Cookie、Token、登录身份，不绕过登录、验证码或风控。页面要求验证时，在指定浏览器人工完成后重新运行。
 
+## 连接与页面校验
+
+脚本只连接本机 loopback Easy WebBridge（`127.0.0.1` 或 `::1`），拒绝带凭据、路径或查询参数的 Bridge 地址，也不跟随 Bridge HTTP 重定向。导航使用任务标签，不请求前台激活；仅在最终页面为 HTTPS 抖音热点或搜索页且页面通过拦截检查时采集可见卡片，并排除隐藏节点。
+
 关键词：抖音热点、抖音选题、今天发什么、三秒钩子、短视频选题、EasyBR 多账号、免费、免 API Key。
 
 ## 智能体兼容

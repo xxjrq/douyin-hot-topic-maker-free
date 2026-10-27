@@ -47,6 +47,10 @@ One online browser is selected automatically. If several are online, run `node s
 
 The Skill does not read or expose cookies, tokens, or login identity, and it never bypasses login, CAPTCHA, or risk controls. Handle any challenge manually in the selected browser, then retry.
 
+## Connection and page checks
+
+The script connects only to loopback Easy WebBridge (`127.0.0.1` or `::1`), rejects Bridge URLs with credentials, paths, or query parameters, and does not follow Bridge HTTP redirects. Navigation uses task tabs without requesting foreground activation. Extraction proceeds only on a final HTTPS Douyin hot or search page that passes the access check, and excludes hidden cards.
+
 ## Agent compatibility
 
 This is a standard `SKILL.md` skill and is not limited to OpenAI or any single agent. Codex, Claude, WorkBuddy, OpenCode, and other tools that support Skills can follow the same instructions.

@@ -14,6 +14,17 @@ const RISK_LEVELS = new Set(["low", "medium", "high"]);
 const FACT_STATUSES = new Set(["page_visible_only", "needs_fact_review", "blocked"]);
 const PUBLISHABILITY = new Set(["ready_for_human_review", "needs_fact_review", "blocked"]);
 
+export function validateBridgeBase(value = process.env.SKILL_FACTORY_WEBBRIDGE_URL || process.env.EASY_WEBBRIDGE_URL || BASE_URL) {
+  let url;
+  try { url = new URL(value); } catch { throw new Error("Easy WebBridge address must be local loopback HTTP"); }
+  const loopback = url.hostname === "127.0.0.1" || url.hostname === "[::1]" || url.hostname === "::1";
+  if (url.protocol !== "http:" || !loopback || url.username || url.password
+      || (url.pathname !== "" && url.pathname !== "/") || url.search || url.hash) {
+    throw new Error("Easy WebBridge address must be credential-free loopback HTTP without a path");
+  }
+  return url.origin;
+}
+
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`;
 const now = () => new Date().toISOString();
 const text = (value) => value == null ? null : String(value).trim() || null;
@@ -107,12 +118,60 @@ export function renderPlan(snapshot, draft) {
 }
 
 async function token() { const file = process.env.SKILL_FACTORY_WEBBRIDGE_TOKEN_FILE || process.env.EASY_WEBBRIDGE_TOKEN_FILE || path.join(os.homedir(), ".easy-webbridge", "bridge-token"); try { const value = (await readFile(file, "utf8")).trim(); if (!value) fail("Easy WebBridge Token 文件为空", 2); return value; } catch (error) { if (error.exitCode) throw error; fail("找不到 Easy WebBridge Token 文件", 2); } }
-async function api(endpoint, init = {}) { try { const response = await fetch(`${process.env.SKILL_FACTORY_WEBBRIDGE_URL || BASE_URL}${endpoint}`, { ...init, headers: { "Content-Type": "application/json", Authorization: `Bearer ${await token()}`, ...(init.headers || {}) } }); if (!response.ok) fail(`Easy WebBridge request failed (${response.status}); check selected browser and local authorization`, 1); return await response.json(); } catch (error) { if (error.exitCode) throw error; fail("Easy WebBridge is unavailable; start the local bridge and retry", 1); } }
+async function api(endpoint, init = {}) { try { const base = validateBridgeBase(); const auth = await token(); const response = await fetch(`${base}${endpoint}`, { ...init, redirect: "error", headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth}`, ...(init.headers || {}) } }); if (!response.ok) fail(`Easy WebBridge request failed (${response.status}); check selected browser and local authorization`, 1); return await response.json(); } catch (error) { if (error.exitCode) throw error; fail("Easy WebBridge is unavailable; start the local bridge and retry", 1); } }
 export function bridgeCommandPayload(action, args, session) { return { action, args: { ...args, session }, timeoutMs: 20000 }; }
 async function command(browserId, action, args, session) { return (await api(`/v1/browsers/${encodeURIComponent(browserId)}/commands`, { method: "POST", body: JSON.stringify(bridgeCommandPayload(action, args, session)) })).result; }
-export const HOT_EXTRACT = `(() => {const cards=[...document.querySelectorAll('a[href*="/video/"],a[href*="/note/"]')].slice(0,30);return {url:location.href,pageText:document.body.innerText.slice(0,12000),pageType:/\\/hot(?:[/?#]|$)/.test(location.pathname),visible:cards.some(a=>{const r=a.getBoundingClientRect();return r.width>0&&r.height>0}),items:cards.map(a=>{const c=a.closest('div');const t=c?.innerText||'';return {title:a.innerText.trim()||null,workUrl:new URL(a.href,location.href).href,visibleLabel:t.match(/上升热点|热点/)?.[0]||null,visibleMetricsText:t.match(/\\d+(?:\\.\\d+)?[万亿]?人在看/g)||[]}}).filter(x=>x.title)}})()`;
-export const SEARCH_EXTRACT = `(() => {const input=document.querySelector('[data-e2e="searchbar-input"]');const cards=[...document.querySelectorAll('.search-result-card')];return {url:location.href,pageText:document.body.innerText.slice(0,12000),pageType:/\\/(?:jingxuan\\/)?search(?:[/?#]|$)/.test(location.pathname),visible:cards.some(c=>{const r=c.getBoundingClientRect();return r.width>0&&r.height>0}),keyword:input?.value.trim()||'',items:cards.map(c=>{const t=c.innerText.split(/\\n+/).map(x=>x.trim()).filter(Boolean);return {title:t[0]||null,author:t.find(x=>x.startsWith('@'))?.slice(1)||null,publishedText:t.find(x=>x.startsWith('·'))?.replace(/^·\\s*/,'')||null,visibleMetricsText:t.filter(x=>/赞|评论|收藏/.test(x)).slice(0,2),workUrl:c.querySelector('a[href*="/video/"],a[href*="/note/"]')?.href||null}})}})()`;
-async function waitAndExtract(browserId, session, url, code, keyword, limit) { const tab = await command(browserId, "navigate", { url, newTab: keyword == null, active: true, groupTitle: "抖音热点选题" }, session); const tabId = tab.tabId || tab.id; if (!tabId) fail("Bridge navigation did not return a task tab", 1); await new Promise((resolve) => setTimeout(resolve, 2500)); for (let attempt = 0; attempt < 6; attempt++) { const page = await command(browserId, "evaluate", { tabId, code }, session); const pathname = text(page?.url) ? new URL(page.url).pathname : ""; const expectedPath = keyword == null ? pathname.startsWith("/hot") : pathname.startsWith("/jingxuan/search") || pathname.startsWith("/search"); if (text(page?.url) && new URL(page.url).hostname === "www.douyin.com" && expectedPath && page.pageType === true && page.visible === true && !BLOCKED.test(page.pageText || "") && (page.items || []).length) return { ...page, requestedKeyword: keyword, items: page.items.slice(0, limit) }; if (attempt < 5) { if (attempt >= 2) await command(browserId, "evaluate", { tabId, code: "window.scrollBy(0, Math.max(600, window.innerHeight)); true" }, session); await new Promise((resolve) => setTimeout(resolve, 500)); } }
+export const HOT_EXTRACT = `(() => {
+  const visible = (node) => {
+    const rect = node.getBoundingClientRect();
+    const style = getComputedStyle(node);
+    return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden" && !node.closest("[hidden],[inert]");
+  };
+  const cards = [...document.querySelectorAll('a[href*="/video/"], a[href*="/note/"]')].filter(visible).slice(0, 30);
+  return {
+    url: location.href,
+    pageText: document.body.innerText.slice(0, 12000),
+    pageType: /\\/hot(?:[/?#]|$)/.test(location.pathname),
+    visible: cards.length > 0,
+    items: cards.map((anchor) => {
+      const container = anchor.closest("div");
+      const visibleText = container?.innerText || anchor.innerText || "";
+      return {
+        title: anchor.innerText.trim() || null,
+        workUrl: new URL(anchor.href, location.href).href,
+        visibleLabel: visibleText.match(/上升热点|热点/)?.[0] || null,
+        visibleMetricsText: visibleText.match(/\\d+(?:\\.\\d+)?[万亿]?人在看/g) || [],
+      };
+    }).filter((item) => item.title),
+  };
+})()`;
+export const SEARCH_EXTRACT = `(() => {
+  const input = document.querySelector('[data-e2e="searchbar-input"]');
+  const visible = (node) => {
+    const rect = node.getBoundingClientRect();
+    const style = getComputedStyle(node);
+    return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden" && !node.closest("[hidden],[inert]");
+  };
+  const cards = [...document.querySelectorAll(".search-result-card")].filter(visible);
+  return {
+    url: location.href,
+    pageText: document.body.innerText.slice(0, 12000),
+    pageType: /\\/(?:jingxuan\\/)?search(?:[/?#]|$)/.test(location.pathname),
+    visible: cards.length > 0,
+    keyword: input?.value.trim() || "",
+    items: cards.map((card) => {
+      const lines = card.innerText.split(/\\n+/).map((line) => line.trim()).filter(Boolean);
+      return {
+        title: lines[0] || null,
+        author: lines.find((line) => line.startsWith("@"))?.slice(1) || null,
+        publishedText: lines.find((line) => line.startsWith("·"))?.replace(/^·\\s*/, "") || null,
+        visibleMetricsText: lines.filter((line) => /赞|评论|收藏/.test(line)).slice(0, 2),
+        workUrl: card.querySelector('a[href*="/video/"], a[href*="/note/"]')?.href || null,
+      };
+    }),
+  };
+})()`;
+async function waitAndExtract(browserId, session, url, code, keyword, limit) { const tab = await command(browserId, "navigate", { url, newTab: keyword == null, groupTitle: "抖音热点选题" }, session); const tabId = tab.tabId || tab.id; if (!tabId) fail("Bridge navigation did not return a task tab", 1); await new Promise((resolve) => setTimeout(resolve, 2500)); for (let attempt = 0; attempt < 6; attempt++) { const page = await command(browserId, "evaluate", { tabId, code }, session); const actualUrl = text(page?.url) ? new URL(page.url) : null; const pathname = actualUrl?.pathname || ""; const expectedPath = keyword == null ? /^\/hot(?:\/|$)/.test(pathname) : /^\/(?:jingxuan\/)?search(?:\/|$)/.test(pathname); if (actualUrl?.protocol === "https:" && actualUrl.hostname === "www.douyin.com" && expectedPath && page.pageType === true && page.visible === true && !BLOCKED.test(page.pageText || "") && (page.items || []).length) return { ...page, requestedKeyword: keyword, items: page.items.slice(0, limit) }; if (attempt < 5) { if (attempt >= 2) await command(browserId, "evaluate", { tabId, code: "window.scrollBy(0, Math.max(600, window.innerHeight)); true" }, session); await new Promise((resolve) => setTimeout(resolve, 500)); } }
   return { pageText: "", keyword: null, requestedKeyword: keyword, items: [] };
 }
 async function collect(request, output) {
